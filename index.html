@@ -305,6 +305,12 @@
   .whack-cell:active{transform:scale(.9);}
   .whack-cell.live{background:radial-gradient(circle at 50% 40%,#3a2a14,#241c10);border-color:rgba(251,191,36,.5);}
   .whack-cell.fake{background:radial-gradient(circle at 50% 40%,#15303a,#10212a);border-color:rgba(96,165,250,.4);}
+  .rules{display:flex;flex-direction:column;gap:7px;text-align:left;margin:8px 0 14px;}
+  .rule{display:flex;gap:10px;align-items:center;background:var(--bg-soft);border:1px solid var(--line);border-radius:11px;padding:9px 11px;font-size:13px;line-height:1.35;}
+  .rule>span{font-size:18px;min-width:62px;text-align:center;}
+  .rule b{color:var(--accent);}
+  .tap-cta{display:block;width:100%;border:none;border-radius:14px;padding:16px;font-size:17px;font-weight:900;cursor:pointer;color:#06250f;background:linear-gradient(135deg,var(--accent),var(--accent-2));margin-bottom:8px;}
+  .tap-cta:active{transform:scale(.97);}
   .gscores{display:flex;flex-direction:column;gap:6px;margin-top:14px;text-align:left;}
   .gscore{display:flex;align-items:center;gap:10px;background:var(--bg-soft);border:1px solid var(--line);border-radius:10px;padding:8px 12px;}
   .gscore.me{border-color:rgba(74,222,128,.4);}
@@ -1204,7 +1210,7 @@ function listenRoom(){
 /* ===== 🍺 유혹 두더지 (실시간 순발력 대결) =====
    술이 튀어나오면 빠르게 탭해 '거절!', 물·커피 등 가짜를 누르면 감점.
    모든 참가자가 createdAt 시드로 같은 출현 순서를 공유해 공정하게 겨룬다. */
-const GAME_COUNT=4000, GAME_PLAY=22000;      // 4초 카운트다운 + 22초 플레이
+const GAME_COUNT=3500, GAME_PLAY=22000;      // 3.5초 카운트다운 + 22초 플레이
 const SPAWN_INTERVAL=620, SPAWN_ACTIVE=1000; // 출현 간격 / 유지 시간
 const DRINKS=["🍺","🍶","🍷","🥃","🍻","🍸","🍾"];
 const FAKES=["💧","☕","🧃","🥤","🍵"];
@@ -1224,48 +1230,71 @@ function spawnInfo(seed,k){
   return {cell,kind:"drink",emoji:e,value:1};                        // 술(눌러야 함)
 }
 
+function gameEnd(g){ return g.startAt ? g.startAt+GAME_PLAY : (g.createdAt+120000); }
+
 function startGame(){
   if(!fbReady || !db || !state.activeRoom){ toast("먼저 방에 참여하세요"); return; }
   if(!state.nick){ toast("별명을 먼저 입력하세요 ✏️"); return; }
   const now=gnow();
-  const g={ type:"whack", status:"running", host:state.uid, createdAt:now,
-            startAt:now+GAME_COUNT, endAt:now+GAME_COUNT+GAME_PLAY, scores:{} };
+  // 대기실(lobby): 규칙 확인 후 '이해했어요'로 준비. startAt 없음.
+  const g={ type:"whack", status:"lobby", host:state.uid, createdAt:now, ready:{}, scores:{} };
   db.ref(`rooms/${state.activeRoom}/game`).set(g)
-    .then(()=>toast("유혹 두더지 시작! 준비~ 🍺"))
+    .then(()=>toast("대결 준비! 게임 방법을 확인하세요 📖"))
     .catch(err=>{
       const c=(err&&err.code)||"";
       toast("게임 시작 실패 ("+c+") — 보안 규칙을 확인하세요");
     });
 }
 
+function readyUp(){
+  if(!db || !state.activeRoom || !curGame) return;
+  db.ref(`rooms/${state.activeRoom}/game/ready/${state.uid}`)
+    .set({nick:state.nick||"익명", ts:gnow()})
+    .catch(err=>toast("준비 실패 ("+((err&&err.code)||"")+")"));
+}
+function forceStart(){
+  if(!db || !state.activeRoom) return;
+  db.ref(`rooms/${state.activeRoom}/game/startAt`).transaction(cur=> cur || (gnow()+GAME_COUNT));
+}
+// 준비 인원이 2명 이상이면 카운트다운 시작 (트랜잭션으로 1회만 설정)
+function maybeStartCountdown(g){
+  if(g.startAt) return;
+  const ready=g.ready||{};
+  if(ready[state.uid] && Object.keys(ready).length>=2){
+    db.ref(`rooms/${state.activeRoom}/game/startAt`).transaction(cur=> cur || (gnow()+GAME_COUNT));
+  }
+}
+
 function onGameState(g){
-  if(!g || !g.endAt){ curGame=null; closeGameOverlay(); return; }
-  if(gnow() > g.endAt + 15000){ curGame=null; closeGameOverlay(); return; }
+  if(!g || !g.createdAt){ curGame=null; closeGameOverlay(); return; }
+  if(gnow() > gameEnd(g) + 15000){ curGame=null; closeGameOverlay(); return; }
   if(g.createdAt!==curGameId){ curGameId=g.createdAt; myScore=0; myCombo=0; tappedSpawns={}; finalWritten=false; }
   if(curGameId===dismissedGameId) return;
   curGame=g;
   openGameOverlay();
   if(!gameTimer) gameTimer=setInterval(gameTick,80);
+  maybeStartCountdown(g);
   renderGame();
 }
 
 function gameTick(){
   if(!curGame) return;
-  const now=gnow();
-  if(now>=curGame.endAt && !finalWritten){ finalWritten=true; writeScore(); }
+  if(curGame.startAt && gnow()>=curGame.startAt+GAME_PLAY && !finalWritten){ finalWritten=true; writeScore(); }
   renderGame();
 }
 
 // 현재 활성 출현을 칸별로 매핑 {cell: {k, ...spawn}}
 function activeCellMap(now){
   const g=curGame; const map={};
+  if(!g.startAt) return map;
+  const end=g.startAt+GAME_PLAY;
   const elapsed=now-g.startAt;
   if(elapsed<0) return map;
   const kEnd=Math.floor(elapsed/SPAWN_INTERVAL);
   const kStart=Math.max(0, Math.floor((elapsed-SPAWN_ACTIVE)/SPAWN_INTERVAL));
   for(let k=kStart;k<=kEnd;k++){
     const T=g.startAt+k*SPAWN_INTERVAL;
-    if(now>=T && now<T+SPAWN_ACTIVE && T<g.endAt && !tappedSpawns[k]){
+    if(now>=T && now<T+SPAWN_ACTIVE && T<end && !tappedSpawns[k]){
       const s=spawnInfo(g.createdAt,k);
       map[s.cell]={k,...s};   // 같은 칸이면 최신 k가 덮어씀
     }
@@ -1274,9 +1303,9 @@ function activeCellMap(now){
 }
 
 function tapCell(idx){
-  const g=curGame; if(!g) return;
+  const g=curGame; if(!g || !g.startAt) return;
   const now=gnow();
-  if(now<g.startAt || now>=g.endAt) return;
+  if(now<g.startAt || now>=g.startAt+GAME_PLAY) return;
   const map=activeCellMap(now);
   const s=map[idx];
   if(!s){ myCombo=0; return; }       // 빈 칸 → 콤보 끊김
@@ -1314,15 +1343,35 @@ function renderGame(){
   const ranked=Object.keys(scores).map(u=>({uid:u,nick:scores[u].nick,score:scores[u].score||0}))
                 .sort((a,b)=>b.score-a.score);
 
-  if(now < g.startAt){
-    const n=Math.ceil((g.startAt-now)/1000);
+  if(!g.startAt){
+    // 대기실: 게임 방법 + '이해했어요'
+    const ready=g.ready||{};
+    const rc=Object.keys(ready).length;
+    const iReady=!!ready[state.uid];
+    const names=Object.keys(ready).map(u=>escapeHtml(ready[u].nick||"익명")).join(", ");
     card.innerHTML=`
-      <h3>🍺 유혹 두더지</h3>
-      <div class="gsub">술 🍺🍶🍷 이 뜨면 빠르게 탭해서 <b>거절!</b><br>물·커피 💧☕ 는 누르면 <b>감점</b>! 💎는 보너스</div>
-      <div class="game-count">${n}</div>
-      <div class="game-time">곧 시작…</div>`;
-  } else if(now < g.endAt){
-    const remain=Math.ceil((g.endAt-now)/1000);
+      <h3>🍺 유혹 두더지 — 게임 방법</h3>
+      <div class="rules">
+        <div class="rule"><span>🍺🍶🍷</span><div>술이 뜨면 <b>빠르게 탭!</b> 거절 성공 <b>+1점</b></div></div>
+        <div class="rule"><span>💧 ☕ 🧃</span><div>물·음료는 <b>누르지 마세요</b> · 누르면 <b>-1점</b></div></div>
+        <div class="rule"><span>💎</span><div>보너스 등장! <b>+3점</b></div></div>
+        <div class="rule"><span>🔥</span><div>연속 성공 시 <b>콤보 추가점</b></div></div>
+        <div class="rule"><span>⏱️</span><div><b>22초</b> 동안 최고 점수에 도전!</div></div>
+      </div>
+      ${ iReady
+        ? `<div class="game-time">✅ 준비 완료! 친구를 기다리는 중… (${rc}명 준비${names?" · "+names:""})</div>
+           <button class="gbtn" onclick="forceStart()">친구 없이 바로 시작 ▶</button>`
+        : `<button class="tap-cta" onclick="readyUp()">이해했어요 👍</button>
+           <div class="game-time">준비된 사람: ${rc}명${names?" · "+names:""}</div>` }
+      <button class="gbtn" onclick="dismissGame()">나가기</button>`;
+  } else if(now < g.startAt){
+    const n=Math.max(1,Math.ceil((g.startAt-now)/1000));
+    card.innerHTML=`
+      <h3>곧 시작! 🔥</h3>
+      <div class="gsub">술 🍺 이 뜨면 탭, 물 💧 은 그대로 두세요!</div>
+      <div class="game-count">${n}</div>`;
+  } else if(now < g.startAt+GAME_PLAY){
+    const remain=Math.ceil((g.startAt+GAME_PLAY-now)/1000);
     const map=activeCellMap(now);
     let cells="";
     for(let i=0;i<9;i++){
@@ -1347,7 +1396,7 @@ function renderGame(){
       <div class="gwinner">${win ? (iWon?"🎉 내가 우승! ":"🏆 우승: ")+escapeHtml(win.nick||"익명")+" ("+win.score+"점)" : "참가자 없음"}</div>
       <div class="gscores">${renderGScores(ranked)}</div>
       <button class="gbtn" onclick="dismissGame()">닫기</button>`;
-    if(gameTimer && now > g.endAt + 1500){ clearInterval(gameTimer); gameTimer=null; }
+    if(gameTimer && now > g.startAt+GAME_PLAY + 1500){ clearInterval(gameTimer); gameTimer=null; }
   }
 }
 function renderGScores(ranked){
