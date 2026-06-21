@@ -189,6 +189,12 @@
     color:var(--text);padding:12px;font-size:15px;font-weight:700;width:100%;
   }
   .comp-btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .room-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px;-webkit-overflow-scrolling:touch;}
+  .room-tabs .rtab{
+    flex:0 0 auto;background:var(--bg-soft);border:1px solid var(--line);color:var(--muted);
+    border-radius:999px;padding:6px 14px;font-size:13px;font-weight:800;letter-spacing:1px;cursor:pointer;
+  }
+  .room-tabs .rtab.active{background:linear-gradient(135deg,var(--accent),var(--blue));color:#06250f;border-color:transparent;}
   .room-bar{
     display:flex;align-items:center;justify-content:space-between;gap:10px;
     background:var(--card-2);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-bottom:12px;
@@ -393,20 +399,9 @@
       </details>
     </div>
 
-    <!-- setup: nickname + create/join -->
-    <div id="compSetup" class="comp-setup" style="display:none;">
-      <div class="field">
-        <label>내 별명</label>
-        <input type="text" id="nickInput" maxlength="12" placeholder="예: 의지의한국인">
-      </div>
-      <div class="comp-btns">
-        <button class="btn sober" onclick="createRoom()">➕ 방 만들기</button>
-        <button class="btn ghost" onclick="joinRoomPrompt()">🔑 방 참여</button>
-      </div>
-    </div>
-
-    <!-- joined: room bar + leaderboard -->
+    <!-- joined: room tabs + bar + leaderboard -->
     <div id="compRoom" style="display:none;">
+      <div class="room-tabs" id="roomTabs"></div>
       <div class="room-bar">
         <div>
           <div class="meta">방 코드</div>
@@ -418,6 +413,18 @@
         </div>
       </div>
       <div class="lb" id="leaderboard"></div>
+    </div>
+
+    <!-- setup: nickname + create/join (새 방 추가용, 항상 표시) -->
+    <div id="compSetup" class="comp-setup" style="display:none;">
+      <div class="field">
+        <label>내 별명</label>
+        <input type="text" id="nickInput" maxlength="12" placeholder="예: 의지의한국인">
+      </div>
+      <div class="comp-btns">
+        <button class="btn sober" onclick="createRoom()">➕ 새 방 만들기</button>
+        <button class="btn ghost" onclick="joinRoomPrompt()">🔑 방 코드로 참여</button>
+      </div>
     </div>
   </section>
 
@@ -476,9 +483,21 @@ let state = {
   goal: 30,
   calPerDrink: 400,
   nick: "",             // 리더보드 표시 별명
-  room: "",             // 참여 중인 방 코드
+  rooms: [],            // 참여 중인 방 코드 목록 (여러 개 가능)
+  activeRoom: "",       // 현재 보고 있는 방
   uid: ""               // 이 기기 고유 id (자동 생성)
 };
+
+// 이전 단일 방(room) 데이터 → 다중 방(rooms) 구조로 변환
+function migrateRooms(){
+  if(!Array.isArray(state.rooms)) state.rooms=[];
+  if(state.room){
+    if(!state.rooms.includes(state.room)) state.rooms.unshift(state.room);
+    if(!state.activeRoom) state.activeRoom=state.room;
+    delete state.room;
+  }
+  if(!state.activeRoom && state.rooms.length) state.activeRoom=state.rooms[0];
+}
 
 let viewMonth = new Date();
 
@@ -520,6 +539,7 @@ function load(){
     const raw = localStorage.getItem(STORE_KEY);
     if(raw){ state = Object.assign(state, JSON.parse(raw)); }
   }catch(e){ console.warn("load failed",e); }
+  migrateRooms();
 }
 function save(){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
@@ -622,7 +642,7 @@ function render(){
   document.getElementById("calPerDrink").value = state.calPerDrink;
   renderGoalPresets();
 
-  if(state.room) syncMyStats();   // 기록 변경 시 리더보드에 반영
+  if(state.rooms && state.rooms.length) syncMyStats();   // 기록 변경 시 모든 방에 반영
 }
 
 function renderCalendar(){
@@ -785,9 +805,10 @@ document.getElementById("fileInput").addEventListener("change", e=>{
       const data=JSON.parse(r.result);
       if(data && typeof data==="object" && data.records){
         const keepUid = state.uid;
-        state=Object.assign({records:{},goal:30,calPerDrink:400,nick:"",room:"",uid:""}, data);
+        state=Object.assign({records:{},goal:30,calPerDrink:400,nick:"",rooms:[],activeRoom:"",uid:""}, data);
         state.uid = keepUid || state.uid;   // 이 기기 신원 유지
-        save(); render(); if(state.room) syncMyStats(); toast("백업을 불러왔어요 ✅");
+        migrateRooms();
+        save(); render(); if(state.rooms.length){ initCompetition(); } toast("백업을 불러왔어요 ✅");
       } else toast("올바른 백업 파일이 아니에요");
     }catch(err){ toast("파일을 읽을 수 없어요"); }
   };
@@ -796,8 +817,8 @@ document.getElementById("fileInput").addEventListener("change", e=>{
 });
 function resetData(){
   if(confirm("모든 금주 기록을 삭제할까요? 되돌릴 수 없습니다.")){
-    state={records:{},goal:30,calPerDrink:400,nick:state.nick,room:state.room,uid:state.uid};
-    save(); render(); if(state.room) syncMyStats(); toast("초기화했어요");
+    state={records:{},goal:30,calPerDrink:400,nick:state.nick,rooms:state.rooms,activeRoom:state.activeRoom,uid:state.uid};
+    save(); render(); if(state.rooms.length) syncMyStats(); toast("초기화했어요");
   }
 }
 
@@ -852,7 +873,7 @@ function loopFx(){
 }
 
 /* ---------------- Competition (Firebase) ---------------- */
-let db=null, fbReady=false, roomRef=null, lastPushed="";
+let db=null, fbReady=false, roomRef=null, pushedSig={}, nickBound=false;
 
 function myStats(){
   const streak=currentStreak();
@@ -887,29 +908,48 @@ function initCompetition(){
     return;
   }
 
-  try{
-    firebase.initializeApp(FIREBASE_CONFIG);
-    db=firebase.database();
-    fbReady=true;
-  }catch(e){
-    notConf.style.display="block"; setup.style.display="none"; roomBox.style.display="none";
-    statusEl.textContent="연결 실패";
-    return;
+  if(!fbReady){
+    try{
+      firebase.initializeApp(FIREBASE_CONFIG);
+      db=firebase.database();
+      fbReady=true;
+    }catch(e){
+      if(!db){
+        notConf.style.display="block"; setup.style.display="none"; roomBox.style.display="none";
+        statusEl.textContent="연결 실패";
+        return;
+      }
+    }
   }
 
   notConf.style.display="none";
+  setup.style.display="flex";        // '새 방 추가' 영역은 항상 표시
   document.getElementById("nickInput").value = state.nick||"";
-  document.getElementById("nickInput").addEventListener("input",e=>{
-    state.nick=e.target.value.trim(); save();
-    if(state.room) syncMyStats();
-  });
-
-  if(state.room){ enterRoomUI(); listenRoom(); syncMyStats(); }
-  else { setup.style.display="flex"; roomBox.style.display="none"; statusEl.textContent="연결됨"; }
+  if(!nickBound){
+    document.getElementById("nickInput").addEventListener("input",e=>{
+      state.nick=e.target.value.trim(); save();
+      if(state.rooms.length) syncMyStats();
+    });
+    nickBound=true;
+  }
 
   // 초대 링크(?room=코드)로 들어온 경우 자동 참가
   const urlRoom = getRoomFromUrl();
-  if(urlRoom && urlRoom !== state.room){ handleInvite(urlRoom); }
+  if(urlRoom){ handleInvite(urlRoom); }
+
+  refreshRoomView();
+}
+
+function refreshRoomView(){
+  const roomBox=document.getElementById("compRoom");
+  const statusEl=document.getElementById("compStatus");
+  if(state.rooms.length){
+    if(!state.activeRoom || !state.rooms.includes(state.activeRoom)) state.activeRoom=state.rooms[0];
+    enterRoomUI(); listenRoom(); syncMyStats();
+  } else {
+    roomBox.style.display="none";
+    statusEl.textContent = fbReady ? "연결됨" : "미설정";
+  }
 }
 
 function getRoomFromUrl(){
@@ -923,37 +963,47 @@ function clearRoomFromUrl(){
 }
 
 function handleInvite(code){
-  // 별명이 없으면 즉시 입력 받기
   let nick = state.nick;
   if(!nick){
     nick = (prompt(`방 ${code} 에 참가합니다.\n사용할 별명을 입력하세요:`)||"").trim();
-    if(!nick){ toast("별명을 입력하면 참가할 수 있어요 ✏️"); document.getElementById("nickInput").focus(); return; }
+    if(!nick){ toast("별명을 입력하면 참가할 수 있어요 ✏️"); document.getElementById("nickInput").focus(); clearRoomFromUrl(); return; }
     state.nick = nick;
     document.getElementById("nickInput").value = nick;
   }
-  // 다른 방에 있었다면 기존 멤버 정보 정리
-  if(state.room && state.room!==code && db && state.uid){
-    db.ref(`rooms/${state.room}/members/${state.uid}`).remove().catch(()=>{});
-    if(roomRef){ roomRef.off(); roomRef=null; }
-  }
-  state.room = code; lastPushed=""; save();
-  enterRoomUI(); listenRoom(); syncMyStats();
+  if(!state.rooms.includes(code)) state.rooms.push(code);
+  state.activeRoom = code;
+  save();
   clearRoomFromUrl();
   toast(`방 ${code} 에 참가했어요! 🎉`);
 }
 
 function enterRoomUI(){
-  document.getElementById("compSetup").style.display="none";
   document.getElementById("compRoom").style.display="block";
-  document.getElementById("roomCode").textContent=state.room;
-  document.getElementById("compStatus").textContent="참여 중";
+  document.getElementById("roomCode").textContent=state.activeRoom;
+  document.getElementById("compStatus").textContent=`${state.rooms.length}개 방 참여 중`;
+  renderRoomTabs();
+}
+
+function renderRoomTabs(){
+  const el=document.getElementById("roomTabs");
+  if(!el) return;
+  el.innerHTML = state.rooms.map(r=>
+    `<button class="rtab${r===state.activeRoom?" active":""}" onclick="switchRoom('${r}')">${escapeHtml(r)}</button>`
+  ).join("");
+}
+
+function switchRoom(code){
+  if(!state.rooms.includes(code)) return;
+  state.activeRoom=code; save();
+  enterRoomUI(); listenRoom();
 }
 
 function createRoom(){
   if(!requireNick()) return;
   const code=genId(6);
-  state.room=code; save();
-  enterRoomUI(); listenRoom(); syncMyStats();
+  if(!state.rooms.includes(code)) state.rooms.push(code);
+  state.activeRoom=code; save();
+  refreshRoomView();
   toast(`방을 만들었어요! 코드: ${code}`);
 }
 
@@ -961,8 +1011,9 @@ function joinRoomPrompt(){
   if(!requireNick()) return;
   const code=(prompt("참여할 방 코드를 입력하세요")||"").trim().toUpperCase();
   if(!code) return;
-  state.room=code; save();
-  enterRoomUI(); listenRoom(); syncMyStats();
+  if(state.rooms.includes(code)){ switchRoom(code); toast("이미 참여 중인 방이에요"); return; }
+  state.rooms.push(code); state.activeRoom=code; save();
+  refreshRoomView();
   toast(`방 ${code} 에 참여했어요`);
 }
 
@@ -973,22 +1024,25 @@ function requireNick(){
 }
 
 function leaveRoom(){
-  if(!confirm("이 방에서 나갈까요?")) return;
-  if(db && state.room && state.uid){
-    db.ref(`rooms/${state.room}/members/${state.uid}`).remove().catch(()=>{});
-  }
+  const code=state.activeRoom;
+  if(!code) return;
+  if(!confirm(`'${code}' 방에서 나갈까요?`)) return;
+  if(db && state.uid){ db.ref(`rooms/${code}/members/${state.uid}`).remove().catch(()=>{}); }
+  state.rooms=state.rooms.filter(r=>r!==code);
+  delete pushedSig[code];
+  if(rankMem[code]){ delete rankMem[code]; saveRanks(rankMem); }
+  state.activeRoom = state.rooms[0]||"";
+  save();
   if(roomRef){ roomRef.off(); roomRef=null; }
-  state.room=""; lastPushed=""; save();
-  document.getElementById("compRoom").style.display="none";
-  document.getElementById("compSetup").style.display="flex";
-  document.getElementById("compStatus").textContent="연결됨";
+  refreshRoomView();
+  toast(`'${code}' 방에서 나왔어요`);
 }
 
 function inviteUrl(){
-  return location.origin + location.pathname + "?room=" + state.room;
+  return location.origin + location.pathname + "?room=" + state.activeRoom;
 }
 function shareRoom(){
-  const code=state.room;
+  const code=state.activeRoom;
   const url=inviteUrl();
   const msg=`🌱 금주 다이어리 같이 해요! 아래 링크를 누르면 바로 참가됩니다 👇\n${url}`;
   if(navigator.share){ navigator.share({title:"금주 다이어리",text:msg,url}).catch(()=>{}); }
@@ -997,7 +1051,7 @@ function shareRoom(){
 }
 
 function syncMyStats(){
-  if(!fbReady || !db || !state.room || !state.uid) return;
+  if(!fbReady || !db || !state.uid || !state.rooms.length) return;
   const s=myStats();
   const payload={
     nick: state.nick || "익명",
@@ -1005,24 +1059,25 @@ function syncMyStats(){
     updatedAt: Date.now()
   };
   const sig=JSON.stringify([payload.nick,s.streak,s.best,s.totalSober,s.rate]);
-  if(sig===lastPushed) return;        // 변화 없으면 쓰기 생략
-  db.ref(`rooms/${state.room}/members/${state.uid}`).set(payload)
-    .then(()=>{ lastPushed=sig; })
-    .catch(err=>{
-      lastPushed="";                  // 실패 시 다음에 다시 시도
-      console.error("리더보드 저장 실패:", err);
-      const code = err && err.code ? err.code : "unknown";
-      toast("⚠️ 기록 동기화 실패 ("+code+") — 보안 규칙을 확인하세요");
-    });
+  state.rooms.forEach(room=>{
+    if(pushedSig[room]===sig) return;   // 그 방엔 이미 최신 상태
+    db.ref(`rooms/${room}/members/${state.uid}`).set(payload)
+      .then(()=>{ pushedSig[room]=sig; })
+      .catch(err=>{
+        pushedSig[room]="";             // 실패 시 다음에 다시 시도
+        console.error("리더보드 저장 실패:", room, err);
+        const c = err && err.code ? err.code : "unknown";
+        toast("⚠️ 기록 동기화 실패 ("+c+") — 보안 규칙을 확인하세요");
+      });
+  });
 }
 
 function listenRoom(){
-  if(!fbReady || !db || !state.room) return;
+  if(!fbReady || !db || !state.activeRoom) return;
   if(roomRef){ roomRef.off(); }
-  roomRef=db.ref(`rooms/${state.room}/members`);
+  roomRef=db.ref(`rooms/${state.activeRoom}/members`);
   roomRef.on("value", snap=>{
-    const members=snap.val()||{};
-    renderLeaderboard(members);
+    renderLeaderboard(snap.val()||{});
   }, err=>{
     document.getElementById("leaderboard").innerHTML=
       `<div class="comp-notice">데이터를 불러올 수 없어요. Realtime Database 규칙(읽기/쓰기 권한)을 확인하세요.</div>`;
@@ -1043,10 +1098,10 @@ function tierOf(streak){ for(const t of TIERS){ if((streak||0)>=t.min) return t;
 function initial(nick){ const s=(nick||"?").trim(); return s?s[0]:"?"; }
 const PODIUM_GRAD=["linear-gradient(135deg,#fde68a,#fbbf24)","linear-gradient(135deg,#f1f5f9,#cbd5e1)","linear-gradient(135deg,#fdba74,#d97706)"];
 
-/* 순위 변동 기억 (이 기기 기준) */
-let lastRanks=loadRanks();
-function loadRanks(){ try{return JSON.parse(localStorage.getItem("geumju_ranks")||"{}");}catch(e){return {};} }
-function saveRanks(r){ try{localStorage.setItem("geumju_ranks",JSON.stringify(r));}catch(e){} }
+/* 순위 변동 기억 — 방별로 저장 {room:{uid:rank}} */
+let rankMem=loadRanks();
+function loadRanks(){ try{return JSON.parse(localStorage.getItem("geumju_ranks2")||"{}");}catch(e){return {};} }
+function saveRanks(r){ try{localStorage.setItem("geumju_ranks2",JSON.stringify(r));}catch(e){} }
 
 function buildPodium(arr){
   if(arr.length<2) return "";
@@ -1094,24 +1149,27 @@ function buildBattle(arr){
 
 function renderLeaderboard(members){
   const lb=document.getElementById("leaderboard");
+  const room=state.activeRoom;
   const arr=Object.keys(members).map(uid=>({uid,...members[uid]}));
   if(arr.length===0){
-    lb.innerHTML=`<div class="comp-notice">아직 아무도 없어요. 친구에게 방 코드 <b>${state.room}</b> 를 공유하세요!</div>`;
+    lb.innerHTML=`<div class="comp-notice">아직 아무도 없어요. 친구에게 방 코드 <b>${room}</b> 를 공유하세요!</div>`;
+    rankMem[room]={}; saveRanks(rankMem);
     return;
   }
   arr.sort((a,b)=> (b.streak-a.streak) || (b.best-a.best) || (b.totalSober-a.totalSober));
 
-  // 현재 순위 맵
+  // 현재 순위 맵 (이 방 기준)
   const curRanks={}; arr.forEach((m,i)=>curRanks[m.uid]=i);
-  const hasHistory=Object.keys(lastRanks).length>0;
+  const prev = rankMem[room] || {};
+  const hasHistory=Object.keys(prev).length>0;
 
   // 내가 누군가를 추월했는지 → 축하 효과
-  const myCur=curRanks[state.uid], myPrev=lastRanks[state.uid];
+  const myCur=curRanks[state.uid], myPrev=prev[state.uid];
   if(hasHistory && myPrev!=null && myCur!=null && myCur<myPrev){
     let passed=null;
     for(const m of arr){
       if(m.uid===state.uid) continue;
-      const pPrev=lastRanks[m.uid], pCur=curRanks[m.uid];
+      const pPrev=prev[m.uid], pCur=curRanks[m.uid];
       if(pPrev!=null && pPrev<myPrev && pCur>myCur){ passed=m; break; }
     }
     if(passed){ celebrate(); toast(`🔥 ${passed.nick||"상대"}님을 제쳤어요! 현재 ${myCur+1}위!`); }
@@ -1129,10 +1187,10 @@ function renderLeaderboard(members){
     // 순위 변동 칩
     let chg="";
     if(hasHistory){
-      const prev=lastRanks[m.uid];
-      if(prev==null) chg=`<div class="chg new">NEW</div>`;
-      else if(i<prev) chg=`<div class="chg up">▲${prev-i}</div>`;
-      else if(i>prev) chg=`<div class="chg down">▼${i-prev}</div>`;
+      const pr=prev[m.uid];
+      if(pr==null) chg=`<div class="chg new">NEW</div>`;
+      else if(i<pr) chg=`<div class="chg up">▲${pr-i}</div>`;
+      else if(i>pr) chg=`<div class="chg down">▼${i-pr}</div>`;
       else chg=`<div class="chg same">–</div>`;
     }
     return `<div class="${cls}">
@@ -1150,8 +1208,8 @@ function renderLeaderboard(members){
 
   lb.innerHTML = buildPodium(arr) + buildBattle(arr) + `<div class="lb">${rows}</div>`;
 
-  // 이번 순위를 다음 비교용으로 저장
-  lastRanks=curRanks; saveRanks(curRanks);
+  // 이번 순위를 다음 비교용으로 저장 (이 방 기준)
+  rankMem[room]=curRanks; saveRanks(rankMem);
 }
 
 function escapeHtml(s){
