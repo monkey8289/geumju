@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>금주 다이어리</title>
+<!-- PWA / 홈화면 앱 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f1420">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="금주">
 <style>
   :root{
     --bg:#0f1420;
@@ -254,6 +262,49 @@
   .chg.new{color:var(--blue);}
   .chg.same{color:var(--muted);}
 
+  /* 도발 버튼 */
+  .pokebtn{
+    flex:0 0 auto;background:rgba(248,113,113,.14);border:1px solid rgba(248,113,113,.35);
+    color:#fca5a5;border-radius:10px;padding:6px 9px;font-size:15px;cursor:pointer;line-height:1;
+  }
+  .pokebtn:active{transform:scale(.9);}
+
+  /* 게임 시작 버튼 */
+  #gameStartBtn{margin-top:8px;width:100%;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;}
+
+  /* 게임 오버레이 */
+  .game-overlay{
+    position:fixed;inset:0;z-index:60;background:rgba(8,12,20,.86);backdrop-filter:blur(4px);
+    display:flex;align-items:center;justify-content:center;padding:20px;
+  }
+  .game-card{
+    width:100%;max-width:420px;background:var(--card);border:1px solid var(--line);
+    border-radius:20px;padding:22px 20px;box-shadow:var(--shadow);text-align:center;
+  }
+  .game-card h3{margin:0 0 4px;font-size:18px;font-weight:900;}
+  .game-card .gsub{font-size:13px;color:var(--muted);margin-bottom:14px;}
+  .game-count{font-size:74px;font-weight:900;line-height:1;background:linear-gradient(135deg,#fbbf24,#f87171);-webkit-background-clip:text;background-clip:text;color:transparent;margin:10px 0;}
+  .tap-btn{
+    width:180px;height:180px;border-radius:50%;border:none;cursor:pointer;margin:6px auto;
+    background:radial-gradient(circle at 50% 35%,#fb923c,#ef4444);color:#fff;
+    font-size:30px;font-weight:900;box-shadow:0 10px 30px rgba(239,68,68,.5);display:block;
+    user-select:none;-webkit-user-select:none;touch-action:manipulation;
+  }
+  .tap-btn:active{transform:scale(.94);}
+  .tap-btn .mytaps{display:block;font-size:40px;}
+  .game-time{font-size:14px;color:var(--muted);margin:8px 0;font-weight:700;}
+  .gscores{display:flex;flex-direction:column;gap:6px;margin-top:14px;text-align:left;}
+  .gscore{display:flex;align-items:center;gap:10px;background:var(--bg-soft);border:1px solid var(--line);border-radius:10px;padding:8px 12px;}
+  .gscore.me{border-color:rgba(74,222,128,.4);}
+  .gscore .gr{width:24px;font-weight:900;text-align:center;}
+  .gscore .gn{flex:1;font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .gscore .gt{font-weight:900;color:var(--accent);}
+  .gwinner{font-size:16px;font-weight:900;color:var(--gold);margin:10px 0;}
+  .game-card .gbtn{
+    margin-top:14px;width:100%;border:none;border-radius:12px;padding:13px;font-weight:800;font-size:15px;cursor:pointer;
+    background:var(--card-2);border:1px solid var(--line);color:var(--text);
+  }
+
   /* Settings rows */
   .set-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);}
   .set-row:last-child{border-bottom:none;}
@@ -413,6 +464,7 @@
         </div>
       </div>
       <div class="lb" id="leaderboard"></div>
+      <button class="btn ghost" id="gameStartBtn" onclick="startGame()">🍺 유혹 뿌리치기 대결 시작</button>
     </div>
 
     <!-- setup: nickname + create/join (새 방 추가용, 항상 표시) -->
@@ -431,6 +483,10 @@
   <!-- Settings -->
   <section class="card">
     <div class="sec-title"><h2>⚙️ 설정</h2></div>
+    <div class="set-row" id="installRow" style="display:none;">
+      <div><label>홈화면 앱 설치</label><div class="sub">앱처럼 전체화면으로 사용</div></div>
+      <button class="btn ghost" style="padding:8px 12px;font-size:13px;" onclick="installApp()">📱 설치</button>
+    </div>
     <div class="set-row">
       <div><label>1회 음주 칼로리</label><div class="sub">줄인 칼로리 계산에 사용</div></div>
       <input type="number" id="calPerDrink" min="0" value="400">
@@ -450,6 +506,7 @@
   </div>
 </div>
 
+<div id="gameOverlay" class="game-overlay" style="display:none;"><div class="game-card" id="gameCard"></div></div>
 <div id="toast"></div>
 <canvas id="fx"></canvas>
 <input type="file" id="fileInput" accept="application/json" style="display:none">
@@ -874,6 +931,34 @@ function loopFx(){
 
 /* ---------------- Competition (Firebase) ---------------- */
 let db=null, fbReady=false, roomRef=null, pushedSig={}, nickBound=false;
+let pokeRef=null, gameRef=null, sessionStart=Date.now(), currentMembers={};
+let curGame=null, curGameId=0, dismissedGameId=0, myTaps=0, gameTimer=null, finalWritten=false, lastScoreWrite=0, scoreWriteTimer=null;
+
+const TAUNTS=[
+  "따라올 수 있겠어? 😏",
+  "내 뒤꽁무니 잘 보이지? 🏃💨",
+  "오늘도 한 잔 참을 수 있겠어? 🍺🚫",
+  "1위는 양보 못 해 👑",
+  "곧 추월당할걸? 🔥",
+  "정신 차려, 술이 부른다 🫵",
+  "포기하면 편해… 농담이야 💪",
+  "지금 흔들리고 있지? 😎"
+];
+
+function pokeUser(uid){
+  if(uid===state.uid || !db || !state.activeRoom) return;
+  const text=TAUNTS[Math.floor(Math.random()*TAUNTS.length)];
+  db.ref(`rooms/${state.activeRoom}/pokes`).push({
+    from:state.uid, fromNick:state.nick||"익명", to:uid, text, ts:Date.now()
+  }).catch(err=>toast("도발 전송 실패 ("+((err&&err.code)||"")+")"));
+  const nick=(currentMembers[uid]&&currentMembers[uid].nick)||"상대";
+  toast(`👊 ${nick}님에게 도발: "${text}"`);
+}
+
+function onPokeReceived(p){
+  toast(`👊 ${p.fromNick||"누군가"}님의 도발: "${p.text}"`);
+  if(navigator.vibrate) try{ navigator.vibrate([120,60,120]); }catch(e){}
+}
 
 function myStats(){
   const streak=currentStreak();
@@ -1074,14 +1159,140 @@ function syncMyStats(){
 
 function listenRoom(){
   if(!fbReady || !db || !state.activeRoom) return;
+  const room=state.activeRoom;
   if(roomRef){ roomRef.off(); }
-  roomRef=db.ref(`rooms/${state.activeRoom}/members`);
+  if(pokeRef){ pokeRef.off(); pokeRef=null; }
+  if(gameRef){ gameRef.off(); gameRef=null; }
+  closeGameOverlay();
+
+  roomRef=db.ref(`rooms/${room}/members`);
   roomRef.on("value", snap=>{
     renderLeaderboard(snap.val()||{});
   }, err=>{
     document.getElementById("leaderboard").innerHTML=
       `<div class="comp-notice">데이터를 불러올 수 없어요. Realtime Database 규칙(읽기/쓰기 권한)을 확인하세요.</div>`;
   });
+
+  // 도발 수신 (내게 온 것 + 이번 접속 이후 것만)
+  pokeRef=db.ref(`rooms/${room}/pokes`).limitToLast(15);
+  pokeRef.on("child_added", snap=>{
+    const p=snap.val(); if(!p) return;
+    if(p.to===state.uid && (p.ts||0) >= sessionStart){ onPokeReceived(p); }
+  });
+
+  // 실시간 게임 상태
+  gameRef=db.ref(`rooms/${room}/game`);
+  gameRef.on("value", snap=> onGameState(snap.val()) );
+}
+
+/* ===== 🍺 유혹 뿌리치기 실시간 대결 ===== */
+function startGame(){
+  if(!fbReady || !db || !state.activeRoom){ toast("먼저 방에 참여하세요"); return; }
+  if(!state.nick){ toast("별명을 먼저 입력하세요 ✏️"); return; }
+  const now=Date.now();
+  const g={ status:"running", host:state.uid, createdAt:now,
+            startAt:now+4000, endAt:now+14000, scores:{} };  // 4초 카운트다운 + 10초 플레이
+  db.ref(`rooms/${state.activeRoom}/game`).set(g)
+    .then(()=>toast("대결 시작! 모두 준비~ 🍺"))
+    .catch(err=>toast("게임 시작 실패 ("+((err&&err.code)||"")+")"));
+}
+
+function onGameState(g){
+  if(!g || !g.endAt){ curGame=null; closeGameOverlay(); return; }
+  if(Date.now() > g.endAt + 15000){ curGame=null; closeGameOverlay(); return; } // 종료된 지 오래
+  if(g.createdAt!==curGameId){ curGameId=g.createdAt; myTaps=0; finalWritten=false; } // 새 게임
+  if(curGameId===dismissedGameId) return;   // 내가 닫은 게임은 다시 안 띄움
+  curGame=g;
+  openGameOverlay();
+  if(!gameTimer) gameTimer=setInterval(gameTick,100);
+  renderGame();
+}
+
+function gameTick(){
+  if(!curGame){ return; }
+  const now=Date.now();
+  // 종료 직후 마지막 점수 한 번 더 기록
+  if(now>=curGame.endAt && !finalWritten){ finalWritten=true; writeScore(); }
+  renderGame();
+}
+
+function tapTemptation(){
+  if(!curGame) return;
+  const now=Date.now();
+  if(now<curGame.startAt || now>=curGame.endAt) return;  // 플레이 시간에만
+  myTaps++;
+  const el=document.getElementById("myTapNum"); if(el) el.textContent=myTaps;
+  scheduleScoreWrite();
+}
+function scheduleScoreWrite(){
+  const now=Date.now();
+  if(now-lastScoreWrite>180){ writeScore(); }
+  else if(!scoreWriteTimer){ scoreWriteTimer=setTimeout(()=>{ scoreWriteTimer=null; writeScore(); },180); }
+}
+function writeScore(){
+  lastScoreWrite=Date.now();
+  if(!db || !state.activeRoom || !curGame) return;
+  db.ref(`rooms/${state.activeRoom}/game/scores/${state.uid}`)
+    .set({nick:state.nick||"익명", taps:myTaps}).catch(()=>{});
+}
+
+function openGameOverlay(){ document.getElementById("gameOverlay").style.display="flex"; }
+function closeGameOverlay(){
+  document.getElementById("gameOverlay").style.display="none";
+  if(gameTimer){ clearInterval(gameTimer); gameTimer=null; }
+}
+function dismissGame(){ if(curGame) dismissedGameId=curGameId; closeGameOverlay(); }
+
+function renderGame(){
+  const g=curGame; if(!g) return;
+  const card=document.getElementById("gameCard");
+  const now=Date.now();
+  const scores=g.scores||{};
+  const ranked=Object.keys(scores).map(u=>({uid:u,nick:scores[u].nick,taps:scores[u].taps||0}))
+                .sort((a,b)=>b.taps-a.taps);
+
+  if(now < g.startAt){
+    // 카운트다운
+    const n=Math.ceil((g.startAt-now)/1000);
+    card.innerHTML=`
+      <h3>🍺 유혹이 몰려온다!</h3>
+      <div class="gsub">10초간 '거절!' 버튼을 최대한 많이 눌러 뿌리쳐요</div>
+      <div class="game-count">${n}</div>
+      <div class="game-time">곧 시작…</div>`;
+  } else if(now < g.endAt){
+    // 플레이
+    const remain=Math.ceil((g.endAt-now)/1000);
+    card.innerHTML=`
+      <h3>거절해! 🚫</h3>
+      <div class="game-time">⏱️ ${remain}초 남음</div>
+      <button class="tap-btn" id="tapBtn">거절!<span class="mytaps" id="myTapNum">${myTaps}</span></button>
+      <div class="gscores">${renderGScores(ranked)}</div>`;
+    const btn=document.getElementById("tapBtn");
+    if(btn){
+      btn.onclick=tapTemptation;
+      btn.ontouchstart=function(ev){ ev.preventDefault(); tapTemptation(); };
+    }
+  } else {
+    // 결과
+    const win=ranked[0];
+    const iWon = win && win.uid===state.uid;
+    card.innerHTML=`
+      <h3>🏁 대결 종료!</h3>
+      <div class="gwinner">${win ? (iWon?"🎉 내가 우승! ":"🏆 우승: ")+escapeHtml(win.nick||"익명")+" ("+win.taps+"회)" : "참가자 없음"}</div>
+      <div class="gscores">${renderGScores(ranked)}</div>
+      <button class="gbtn" onclick="dismissGame()">닫기</button>`;
+    if(gameTimer && now > g.endAt + 1500){ clearInterval(gameTimer); gameTimer=null; } // 결과 고정
+  }
+}
+function renderGScores(ranked){
+  if(!ranked.length) return `<div class="gsub">아직 점수가 없어요…</div>`;
+  const medal=["🥇","🥈","🥉"];
+  return ranked.map((r,i)=>`
+    <div class="gscore${r.uid===state.uid?" me":""}">
+      <div class="gr">${i<3?medal[i]:(i+1)}</div>
+      <div class="gn">${escapeHtml(r.nick||"익명")}${r.uid===state.uid?" (나)":""}</div>
+      <div class="gt">${r.taps}회</div>
+    </div>`).join("");
 }
 
 /* 등급(티어) — 연속 금주 일수 기준 */
@@ -1150,6 +1361,7 @@ function buildBattle(arr){
 function renderLeaderboard(members){
   const lb=document.getElementById("leaderboard");
   const room=state.activeRoom;
+  currentMembers=members;
   const arr=Object.keys(members).map(uid=>({uid,...members[uid]}));
   if(arr.length===0){
     lb.innerHTML=`<div class="comp-notice">아직 아무도 없어요. 친구에게 방 코드 <b>${room}</b> 를 공유하세요!</div>`;
@@ -1193,6 +1405,7 @@ function renderLeaderboard(members){
       else if(i>pr) chg=`<div class="chg down">▼${i-pr}</div>`;
       else chg=`<div class="chg same">–</div>`;
     }
+    const poke = me ? "" : `<button class="pokebtn" title="도발 보내기" onclick="pokeUser('${m.uid}')">👊</button>`;
     return `<div class="${cls}">
       <div class="rank">${rank}</div>
       <div class="who">
@@ -1203,6 +1416,7 @@ function renderLeaderboard(members){
         <div class="big">${m.streak||0}<small>일</small></div>
         ${chg}
       </div>
+      ${poke}
     </div>`;
   }).join("");
 
@@ -1214,6 +1428,37 @@ function renderLeaderboard(members){
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------------- PWA (홈화면 앱) ---------------- */
+let deferredPrompt=null;
+if("serviceWorker" in navigator){
+  window.addEventListener("load",()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); });
+}
+window.addEventListener("beforeinstallprompt", e=>{
+  e.preventDefault(); deferredPrompt=e;
+  const r=document.getElementById("installRow"); if(r) r.style.display="flex";
+});
+window.addEventListener("appinstalled", ()=>{
+  deferredPrompt=null;
+  const r=document.getElementById("installRow"); if(r) r.style.display="none";
+  toast("홈화면에 설치됐어요! 🎉");
+});
+function isIOS(){ return /iphone|ipad|ipod/i.test(navigator.userAgent); }
+function isStandalone(){ return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone===true; }
+function installApp(){
+  if(deferredPrompt){
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.finally(()=>{ deferredPrompt=null; });
+  } else if(isIOS()){
+    alert("아이폰 설치 방법:\n\n1) 사파리 하단 '공유' 버튼 누르기\n2) '홈 화면에 추가' 선택\n3) '추가' 누르면 완료!");
+  } else {
+    toast("브라우저 메뉴의 '앱 설치/홈화면에 추가'를 눌러주세요");
+  }
+}
+// iOS는 beforeinstallprompt가 없으니, 설치 안 된 상태면 설치 안내 버튼 노출
+if(isIOS() && !isStandalone()){
+  const r=document.getElementById("installRow"); if(r) r.style.display="flex";
 }
 
 /* ---------------- Init ---------------- */
