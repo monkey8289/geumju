@@ -945,6 +945,8 @@ function loopFx(){
 let db=null, fbReady=false, roomRef=null, pushedSig={}, nickBound=false;
 let pokeRef=null, gameRef=null, sessionStart=Date.now(), currentMembers={};
 let curGame=null, curGameId=0, dismissedGameId=0, myScore=0, myCombo=0, tappedSpawns={}, gameTimer=null, finalWritten=false, lastScoreWrite=0, scoreWriteTimer=null, lastHit=0;
+let serverOffset=0;
+function gnow(){ return Date.now()+serverOffset; }   // 서버 기준 현재시각
 
 const TAUNTS=[
   "따라올 수 있겠어? 😏",
@@ -1010,6 +1012,8 @@ function initCompetition(){
       firebase.initializeApp(FIREBASE_CONFIG);
       db=firebase.database();
       fbReady=true;
+      // 서버 시계 기준으로 게임 타이밍 정렬 (기기 시계 차이 보정)
+      db.ref(".info/serverTimeOffset").on("value", s=>{ serverOffset = s.val()||0; });
     }catch(e){
       if(!db){
         notConf.style.display="block"; setup.style.display="none"; roomBox.style.display="none";
@@ -1223,7 +1227,7 @@ function spawnInfo(seed,k){
 function startGame(){
   if(!fbReady || !db || !state.activeRoom){ toast("먼저 방에 참여하세요"); return; }
   if(!state.nick){ toast("별명을 먼저 입력하세요 ✏️"); return; }
-  const now=Date.now();
+  const now=gnow();
   const g={ type:"whack", status:"running", host:state.uid, createdAt:now,
             startAt:now+GAME_COUNT, endAt:now+GAME_COUNT+GAME_PLAY, scores:{} };
   db.ref(`rooms/${state.activeRoom}/game`).set(g)
@@ -1236,7 +1240,7 @@ function startGame(){
 
 function onGameState(g){
   if(!g || !g.endAt){ curGame=null; closeGameOverlay(); return; }
-  if(Date.now() > g.endAt + 15000){ curGame=null; closeGameOverlay(); return; }
+  if(gnow() > g.endAt + 15000){ curGame=null; closeGameOverlay(); return; }
   if(g.createdAt!==curGameId){ curGameId=g.createdAt; myScore=0; myCombo=0; tappedSpawns={}; finalWritten=false; }
   if(curGameId===dismissedGameId) return;
   curGame=g;
@@ -1247,7 +1251,7 @@ function onGameState(g){
 
 function gameTick(){
   if(!curGame) return;
-  const now=Date.now();
+  const now=gnow();
   if(now>=curGame.endAt && !finalWritten){ finalWritten=true; writeScore(); }
   renderGame();
 }
@@ -1271,7 +1275,7 @@ function activeCellMap(now){
 
 function tapCell(idx){
   const g=curGame; if(!g) return;
-  const now=Date.now();
+  const now=gnow();
   if(now<g.startAt || now>=g.endAt) return;
   const map=activeCellMap(now);
   const s=map[idx];
@@ -1305,7 +1309,7 @@ function dismissGame(){ if(curGame) dismissedGameId=curGameId; closeGameOverlay(
 function renderGame(){
   const g=curGame; if(!g) return;
   const card=document.getElementById("gameCard");
-  const now=Date.now();
+  const now=gnow();
   const scores=g.scores||{};
   const ranked=Object.keys(scores).map(u=>({uid:u,nick:scores[u].nick,score:scores[u].score||0}))
                 .sort((a,b)=>b.score-a.score);
